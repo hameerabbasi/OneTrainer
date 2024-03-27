@@ -2,10 +2,10 @@ from typing import Iterable
 
 import torch
 from torch.nn import Parameter
+from peft import LoraConfig, get_peft_model
 
 from modules.model.StableDiffusionModel import StableDiffusionModel
 from modules.modelSetup.BaseStableDiffusionSetup import BaseStableDiffusionSetup
-from modules.module.LoRAModule import LoRAModuleWrapper
 from modules.util import create
 from modules.util.TrainProgress import TrainProgress
 from modules.util.config.TrainConfig import TrainConfig
@@ -63,18 +63,25 @@ class StableDiffusionLoRASetup(BaseStableDiffusionSetup):
             model: StableDiffusionModel,
             config: TrainConfig,
     ):
+        
+
         if model.text_encoder_lora is None:
-            model.text_encoder_lora = LoRAModuleWrapper(
-                model.text_encoder, config.lora_rank, "lora_te", config.lora_alpha
+            te_lora_config = LoraConfig(
+                r=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.dropout_probability,
+                target_modules=list(n for n, m in model.text_encoder.named_modules() if isinstance(m, torch.nn.Linear | torch.nn.Conv2d)),
             )
+            model.text_encoder_lora = get_peft_model(model.text_encoder, te_lora_config, adapter_name="lora_te")
 
         if model.unet_lora is None:
-            model.unet_lora = LoRAModuleWrapper(
-                model.unet, config.lora_rank, "lora_unet", config.lora_alpha, ["attentions"]
+            unet_lora_config = LoraConfig(
+                r=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.dropout_probability,
+                target_modules=list(n for n, m in model.unet.named_modules() if isinstance(m, torch.nn.Linear | torch.nn.Conv2d)),
             )
-
-        model.text_encoder_lora.set_dropout(config.dropout_probability)
-        model.unet_lora.set_dropout(config.dropout_probability)
+            model.unet_lora = get_peft_model(model.unet, unet_lora_config, adapter_name="lora_unet")
 
         model.text_encoder.requires_grad_(False)
         model.unet.requires_grad_(False)
@@ -92,9 +99,6 @@ class StableDiffusionLoRASetup(BaseStableDiffusionSetup):
 
         model.text_encoder_lora.to(dtype=config.lora_weight_dtype.torch_dtype())
         model.unet_lora.to(dtype=config.lora_weight_dtype.torch_dtype())
-
-        model.text_encoder_lora.hook_to_module()
-        model.unet_lora.hook_to_module()
 
         if config.rescale_noise_scheduler_to_zero_terminal_snr:
             model.rescale_noise_scheduler_to_zero_terminal_snr()
