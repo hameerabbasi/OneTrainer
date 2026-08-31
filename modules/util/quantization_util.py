@@ -2,6 +2,8 @@ from collections.abc import Callable
 from functools import partial
 
 import modules.util.multi_gpu_util as multi
+import modules.util.nvcomp_util as nvcomp_util
+from modules.module.quantized.mixin.CompressedWeightMixin import CompressedWeightMixin
 from modules.module.quantized.mixin.QuantizedLinearMixin import QuantizedLinearMixin
 from modules.module.quantized.mixin.QuantizedModuleMixin import QuantizedModuleMixin
 from modules.util.config.TrainConfig import QuantizationConfig, TrainConfig
@@ -74,13 +76,6 @@ def quantize_fp8_axiswise(x: Tensor, dim: int) -> tuple[Tensor, Tensor]:
 
 def dequantize(q: Tensor, scale: float | Tensor) -> Tensor:
     return q.float() * scale
-
-
-from modules.module.quantized.LinearA8 import LinearA8
-from modules.module.quantized.LinearFp8 import LinearFp8
-from modules.module.quantized.LinearGGUFA8 import LinearGGUFA8
-from modules.module.quantized.LinearSVD import BaseLinearSVD, make_svd_linear
-from modules.module.quantized.LinearW8A8 import LinearW8A8
 
 
 def __create_linear_layer(construct_fn, module: nn.Linear, copy_parameters: bool) -> nn.Module:
@@ -174,6 +169,11 @@ def replace_linear_with_quantized_layers(
         quantization: QuantizationConfig | None = None,
         copy_parameters: bool = False,
 ):
+    from modules.module.quantized.LinearFp8 import LinearFp8
+    from modules.module.quantized.LinearGGUFA8 import LinearGGUFA8
+    from modules.module.quantized.LinearSVD import make_svd_linear
+    from modules.module.quantized.LinearW8A8 import LinearW8A8
+
     kwargs = {}
     if dtype.quantize_nf4():
         linear_class = LinearNf4
@@ -193,12 +193,6 @@ def replace_linear_with_quantized_layers(
         kwargs = {'dtype': torch.int8}
     elif dtype == DataType.GGUF_A8_FLOAT:
         linear_class=LinearGGUFA8
-        kwargs = {'dtype': torch.float8_e4m3fn}
-    elif dtype == DataType.BFLOAT_16_A8_INT:
-        linear_class=LinearA8
-        kwargs = {'dtype': torch.int8}
-    elif dtype == DataType.BFLOAT_16_A8_FLOAT:
-        linear_class=LinearA8
         kwargs = {'dtype': torch.float8_e4m3fn}
     else:
         return
@@ -233,7 +227,7 @@ def replace_linear_with_quantized_layers(
     #https://github.com/Nerogar/OneTrainer/issues/1050
     for name, module in parent_module.named_modules():
         assert (not isinstance(module, convert_type)
-                or isinstance(module, (QuantizedLinearMixin, LinearGGUFA8, LinearA8))
+                or isinstance(module, (QuantizedLinearMixin, LinearGGUFA8))
                 or any(s in name.split('.') for s in keep_in_fp32_modules)
                 or (quant_filters is not None and len(quant_filters) > 0 and not any(f.matches(name) for f in quant_filters))
                ), f"Linear layer {name} was not found in model for quantization"
@@ -242,6 +236,10 @@ def is_quantized_parameter(
         module: nn.Module,
         parameter_name: str,
 ) -> bool:
+    from modules.module.quantized.LinearFp8 import LinearFp8
+    from modules.module.quantized.LinearSVD import BaseLinearSVD
+    from modules.module.quantized.LinearW8A8 import LinearW8A8
+
     if isinstance(module, BaseLinearSVD):
         if parameter_name in ["svd_up", "svd_down"]:
             return True
@@ -264,16 +262,29 @@ def is_quantized_parameter(
     return False
 
 
-def quantize_layers(module: nn.Module, device: torch.device, train_dtype: DataType, config: TrainConfig):
+def quantize_layers(module: nn.Module, device: torch.device, train_dtype: DataType, config: TrainConfig, compress: bool = False):
     if module is None:
         return
     child_modules = list(module.modules())
+
+    compressible = [m for m in child_modules if isinstance(m, CompressedWeightMixin)]
+    if compress and not nvcomp_util.available():
+        raise RuntimeError("a compressed weight data type is selected but nvCOMP is not available")
+    for m in compressible:
+        m.compress = compress
+
     for _ in multi.master_first(): #avoid cache writing conflicts
         for child_module in tqdm(child_modules, desc="Quantizing model weights", total=len(child_modules), delay=5, smoothing=0.1):
-            if isinstance(child_module, (QuantizedModuleMixin, GGUFLinear, LinearA8)):
+            if isinstance(child_module, (QuantizedModuleMixin, GGUFLinear)):
                 child_module.compute_dtype = train_dtype.torch_dtype()
             if isinstance(child_module, QuantizedModuleMixin):
                 child_module.quantize(device=device)
+
+    if multi.is_master() and compress:
+        uncompressed = sum(m.uncompressed_bytes() for m in compressible)
+        compressed = sum(m.weight.nbytes for m in compressible)
+        if uncompressed > 0:
+            tqdm.write(f"nvCOMP weight compression ({type(module).__name__}): {uncompressed / 2**20:.0f} -> {compressed / 2**20:.0f} MiB ({(1 - compressed / uncompressed) * 100:.0f}% saved)")
 
 def get_unquantized_weight(module: nn.Linear, dtype: torch.dtype, device: torch.device) -> Tensor:
     assert isinstance(module, nn.Linear)
@@ -290,6 +301,8 @@ def get_weight_shape(module: nn.Linear) -> torch.Size:
     return torch.Size((module.out_features, module.in_features))
 
 def get_offload_tensors(module: nn.Module) -> list[torch.Tensor]:
+    from modules.module.quantized.LinearSVD import BaseLinearSVD
+
     tensors = []
 
     if bnb is not None:

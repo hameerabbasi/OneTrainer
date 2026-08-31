@@ -9,26 +9,12 @@ from modules.util.NamedParameterGroup import NamedParameterGroupCollection
 from modules.util.optimizer_util import init_model_parameters
 from modules.util.TrainProgress import TrainProgress
 
-import torch
-
 
 @factory.register(BaseModelSetup, ModelType.FLUX_DEV_1, TrainingMethod.EMBEDDING)
 @factory.register(BaseModelSetup, ModelType.FLUX_FILL_DEV_1, TrainingMethod.EMBEDDING)
 class FluxEmbeddingSetup(
     BaseFluxSetup,
 ):
-    def __init__(
-            self,
-            train_device: torch.device,
-            temp_device: torch.device,
-            debug_mode: bool,
-    ):
-        super().__init__(
-            train_device=train_device,
-            temp_device=temp_device,
-            debug_mode=debug_mode,
-        )
-
     def create_parameters(
             self,
             model: FluxModel,
@@ -85,14 +71,16 @@ class FluxEmbeddingSetup(
             model: FluxModel,
             config: TrainConfig,
     ):
-        vae_on_train_device = not config.image_caching
-        text_encoder_1_on_train_device = config.train_text_encoder_or_embedding() or not config.text_caching
-        text_encoder_2_on_train_device = config.train_text_encoder_2_or_embedding() or not config.text_caching
+        vae_on_train_device = not config.latent_caching
 
-        model.text_encoder_1_to(self.train_device if text_encoder_1_on_train_device else self.temp_device)
-        model.text_encoder_2_to(self.train_device if text_encoder_2_on_train_device else self.temp_device)
-        model.vae_to(self.train_device if vae_on_train_device else self.temp_device)
-        model.transformer_to(self.train_device)
+        parts = ["transformer"]
+        if config.text_encoder.train_embedding:
+            parts.append("text_encoder")
+        if config.text_encoder_2.train_embedding:
+            parts.append("text_encoder_2")
+        if vae_on_train_device:
+            parts.append("vae")
+        model.materialize_only(*parts)
 
         if model.text_encoder_1 is not None:
             model.text_encoder_1.eval()

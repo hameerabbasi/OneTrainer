@@ -10,26 +10,12 @@ from modules.util.NamedParameterGroup import NamedParameterGroupCollection
 from modules.util.optimizer_util import init_model_parameters
 from modules.util.TrainProgress import TrainProgress
 
-import torch
-
 
 @factory.register(BaseModelSetup, ModelType.PIXART_ALPHA, TrainingMethod.FINE_TUNE)
 @factory.register(BaseModelSetup, ModelType.PIXART_SIGMA, TrainingMethod.FINE_TUNE)
 class PixArtAlphaFineTuneSetup(
     BasePixArtAlphaSetup,
 ):
-    def __init__(
-            self,
-            train_device: torch.device,
-            temp_device: torch.device,
-            debug_mode: bool,
-    ):
-        super().__init__(
-            train_device=train_device,
-            temp_device=temp_device,
-            debug_mode=debug_mode,
-        )
-
     def create_parameters(
             self,
             model: PixArtAlphaModel,
@@ -88,15 +74,18 @@ class PixArtAlphaFineTuneSetup(
             model: PixArtAlphaModel,
             config: TrainConfig,
     ):
-        vae_on_train_device = self.debug_mode or not config.image_caching
+        vae_on_train_device = self.debug_mode or not config.latent_caching
         text_encoder_on_train_device = \
             config.text_encoder.train \
             or config.train_any_embedding() \
-            or not config.text_caching
+            or not config.latent_caching
 
-        model.text_encoder_to(self.train_device if text_encoder_on_train_device else self.temp_device)
-        model.vae_to(self.train_device if vae_on_train_device else self.temp_device)
-        model.transformer_to(self.train_device)
+        parts = ["transformer"]
+        if text_encoder_on_train_device:
+            parts.append("text_encoder")
+        if vae_on_train_device:
+            parts.append("vae")
+        model.materialize_only(*parts)
 
         if config.text_encoder.train:
             model.text_encoder.train()

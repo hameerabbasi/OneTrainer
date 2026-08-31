@@ -41,7 +41,6 @@ class Optimizer(Enum):
     # 32 bit is torch and not bnb
     SGD = 'SGD'
     SGD_8BIT = 'SGD_8BIT'
-    SINKSGD_ADV = 'SINKSGD_ADV'
     SIGNSGD_ADV = 'SIGNSGD_ADV'
 
     # Schedule-free optimizers
@@ -99,19 +98,6 @@ class Optimizer(Enum):
             self.PRODIGY_PLUS_SCHEDULE_FREE,
         ]
 
-    @property
-    def is_adv(self):
-        return self in [
-            self.ADAMW_ADV,
-            self.ADOPT_ADV,
-            self.LION_ADV,
-            self.SINKSGD_ADV,
-            self.SIGNSGD_ADV,
-            self.PRODIGY_ADV,
-            self.MUON_ADV,
-            self.ADAMUON_ADV,
-        ]
-
     def supports_fused_back_pass(self):
         return self in [
             Optimizer.ADAFACTOR,
@@ -127,7 +113,6 @@ class Optimizer(Enum):
             Optimizer.MUON_ADV,
             Optimizer.ADAMUON_ADV,
             Optimizer.SIGNSGD_ADV,
-            Optimizer.SINKSGD_ADV,
         ]
 
     # Small helper for adjusting learning rates to adaptive optimizers.

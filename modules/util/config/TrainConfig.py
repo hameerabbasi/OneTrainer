@@ -110,10 +110,14 @@ class TrainOptimizerConfig(BaseConfig):
     use_schedulefree: True
     use_orthograd: False
     nnmf_factor: False
-    orthogonal_gradient: str
+    orthogonal_gradient: False
     use_atan2: False
+    use_AdEMAMix: False
+    beta3_ema: float
+    alpha_grad: float
     beta1_warmup: int
     min_beta1: float
+    Simplified_AdEMAMix: False
     kourkoutas_beta: False
     schedulefree_c: float
     ns_steps: int
@@ -132,45 +136,11 @@ class TrainOptimizerConfig(BaseConfig):
     accelerated_ns: False
     cautious_wd: False
     approx_mars: False
+    auto_kappa_p: False
     compile: False
-    spectral_normalization: False
-    stochastic_sign: False
-    centered_wd: float
-    centered_wd_mode: str
-    factored_2nd: False
-    fisher_wd: False
-    state_precision: str
-    orthogonal_sinkhorn: False
-    sinkhorn_iterations: int
-    normed_momentum: False
-    nesterov_coef: float
-    snr_cond: False
-    geometric_wd: False
 
     def __init__(self, data: list[(str, Any, type, bool)]):
-        super().__init__(
-            data,
-            config_version=1,
-            config_migrations={
-                0: self.__migration_0
-            }
-        )
-
-    def __migration_0(self, data: dict) -> dict:
-        migrated_data = data.copy()
-
-        sp = migrated_data.get("state_precision")
-        valid_sp = {"auto", "factored", "fp32", "fp16", "bf16_sr", "int8_sr"}
-        if sp is not None and sp not in valid_sp:
-            print(f"WARN: invalid optimizer state_precision '{sp}' in config, falling back to 'auto'.")
-            migrated_data["state_precision"] = "auto"
-
-        # orthogonal_gradient was a bool before adv_optm 2.5 made it a mode string
-        og_ortho = migrated_data.get("orthogonal_gradient")
-        if isinstance(og_ortho, bool):
-            migrated_data["orthogonal_gradient"] = "flattened" if og_ortho else "disabled"
-
-        return migrated_data
+        super().__init__(data)
 
     @staticmethod
     def default_values():
@@ -253,10 +223,14 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("use_schedulefree", True, bool, True))
         data.append(("use_orthograd", False, bool, False))
         data.append(("nnmf_factor", False, bool, False))
-        data.append(("orthogonal_gradient", 'disabled', str, False))
+        data.append(("orthogonal_gradient", False, bool, False))
         data.append(("use_atan2", False, bool, False))
+        data.append(("use_AdEMAMix", False, bool, False))
+        data.append(("beta3_ema", None, float, True))
+        data.append(("alpha_grad", None, float, True))
         data.append(("beta1_warmup", None, int, True))
         data.append(("min_beta1", None, float, True))
+        data.append(("Simplified_AdEMAMix", False, bool, False))
         data.append(("kourkoutas_beta", False, bool, False))
         data.append(("schedulefree_c", None, float, True))
         data.append(("ns_steps", None, int, True))
@@ -275,20 +249,8 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("accelerated_ns", False, bool, False))
         data.append(("cautious_wd", False, bool, False))
         data.append(("approx_mars", False, bool, False))
+        data.append(("auto_kappa_p", False, bool, False))
         data.append(("compile", False, bool, False))
-        data.append(("spectral_normalization", False, bool, False))
-        data.append(("stochastic_sign", False, bool, False))
-        data.append(("centered_wd", 0.0, float, False))
-        data.append(("centered_wd_mode", "full", str, False))
-        data.append(("factored_2nd", False, bool, False))
-        data.append(("fisher_wd", False, bool, False))
-        data.append(("state_precision", "auto", str, False))
-        data.append(("orthogonal_sinkhorn", False, bool, False))
-        data.append(("sinkhorn_iterations", None, int, True))
-        data.append(("normed_momentum", False, bool, False))
-        data.append(("nesterov_coef", None, float, True))
-        data.append(("snr_cond", False, bool, False))
-        data.append(("geometric_wd", False, bool, False))
 
         return TrainOptimizerConfig(data)
 
@@ -411,6 +373,8 @@ class TrainConfig(BaseConfig):
     debug_dir: str
     workspace_dir: str
     cache_dir: str
+    huggingface_cache_dir: str
+    offline_mode: bool
     tensorboard: bool
     tensorboard_expose: bool
     tensorboard_always_on: bool
@@ -443,8 +407,7 @@ class TrainConfig(BaseConfig):
     concept_file_name: str
     concepts: list[ConceptConfig]
     aspect_ratio_bucketing: bool
-    image_caching: bool
-    text_caching: bool
+    latent_caching: bool
     clear_cache_before_training: bool
 
     # training settings
@@ -463,8 +426,7 @@ class TrainConfig(BaseConfig):
     ema: EMAMode
     ema_decay: float
     ema_update_step_interval: int
-    caching_threads: int
-    prefetch_next_batch: bool
+    dataloader_threads: int
     train_device: str
     temp_device: str
     train_dtype: DataType
@@ -502,7 +464,6 @@ class TrainConfig(BaseConfig):
     timestep_distribution: TimestepDistribution
     min_noising_strength: float
     max_noising_strength: float
-    cep_gamma: float
 
     noising_weight: float
     noising_bias: float
@@ -584,10 +545,7 @@ class TrainConfig(BaseConfig):
     # oft
     oft_block_size: int
     oft_block_share: bool
-    dora_oft: bool
     oft_scaled: bool
-    oft_clipped_norm: float | None
-    oft_cans: bool
 
     # lokr
     lokr_dim: int
@@ -635,7 +593,7 @@ class TrainConfig(BaseConfig):
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(
             data,
-            config_version=12,
+            config_version=11,
             config_migrations={
                 0: self.__migration_0,
                 1: self.__migration_1,
@@ -648,7 +606,6 @@ class TrainConfig(BaseConfig):
                 8: self.__migration_8,
                 9: self.__migration_9,
                 10: self.__migration_10,
-                11: self.__migration_11,
             }
         )
 
@@ -908,26 +865,11 @@ class TrainConfig(BaseConfig):
 
         return migrated_data
 
-    def __migration_11(self, data: dict) -> dict:
-        migrated_data = data.copy()
-
-        if "dataloader_threads" in migrated_data:
-            migrated_data["caching_threads"] = migrated_data.pop("dataloader_threads")
-
-        return migrated_data
-
     def model_part_configs(self) -> list[TrainModelPartConfig]:
         # the per-part configs for the components this model_type actually has. Avoids "phantom" parts whose
         # fields keep their defaults (train=True) or migrated offload values but don't exist in the model.
         return [getattr(self, name) for name in self.model_type.model_parts()]
 
-    def __migration_11(self, data: dict) -> dict:
-        migrated_data = data.copy()
-        if "latent_caching" in migrated_data:
-            latent_caching = migrated_data.pop("latent_caching")
-            migrated_data["image_caching"] = latent_caching
-            migrated_data["text_caching"] = latent_caching
-        return migrated_data
     def weight_dtypes(self) -> ModelWeightDtypes:
         return ModelWeightDtypes(
             self.train_dtype,
@@ -1075,6 +1017,8 @@ class TrainConfig(BaseConfig):
         data.append(("debug_dir", "debug", str, False))
         data.append(("workspace_dir", "workspace/run", str, False))
         data.append(("cache_dir", "workspace-cache/run", str, False))
+        data.append(("huggingface_cache_dir", "", str, False))
+        data.append(("offline_mode", False, bool, False))
         data.append(("tensorboard", True, bool, False))
         data.append(("tensorboard_expose", False, bool, False))
         data.append(("tensorboard_always_on", False, bool, False))
@@ -1107,8 +1051,7 @@ class TrainConfig(BaseConfig):
         data.append(("concept_file_name", "training_concepts/concepts.json", str, False))
         data.append(("concepts", None, list[ConceptConfig], True))
         data.append(("aspect_ratio_bucketing", True, bool, False))
-        data.append(("image_caching", True, bool, False))
-        data.append(("text_caching", True, bool, False))
+        data.append(("latent_caching", True, bool, False))
         data.append(("clear_cache_before_training", True, bool, False))
 
         # training settings
@@ -1125,8 +1068,7 @@ class TrainConfig(BaseConfig):
         data.append(("ema", EMAMode.OFF, EMAMode, False))
         data.append(("ema_decay", 0.999, float, False))
         data.append(("ema_update_step_interval", 5, int, False))
-        data.append(("caching_threads", 2, int, False))
-        data.append(("prefetch_next_batch", True, bool, False))
+        data.append(("dataloader_threads", 2, int, False))
         data.append(("train_device", default_device.type, str, False))
         data.append(("temp_device", "cpu", str, False))
         data.append(("train_dtype", DataType.FLOAT_16, DataType, False))
@@ -1163,7 +1105,6 @@ class TrainConfig(BaseConfig):
         data.append(("noising_bias", 0.0, float, False))
         data.append(("timestep_shift", 1.0, float, False))
         data.append(("dynamic_timestep_shifting", False, bool, False))
-        data.append(("cep_gamma", 0.0, float, False))
 
 
         # unet
@@ -1298,10 +1239,7 @@ class TrainConfig(BaseConfig):
         # oft
         data.append(("oft_block_size", 32, int, False))
         data.append(("oft_block_share", False, bool, False))
-        data.append(("dora_oft", False, bool, False))
         data.append(("oft_scaled", False, bool, False))
-        data.append(("oft_clipped_norm", 0.95, float, True))
-        data.append(("oft_cans", False, bool, False))
 
         # lokr
         data.append(("lokr_dim", 16, int, False))
