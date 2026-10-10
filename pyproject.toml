@@ -16,7 +16,7 @@ dependencies = [
     "tqdm==4.67.1",
     "pyyaml==6.0.2",
     "huggingface-hub==1.22.0",
-    "scipy==1.15.3",
+    "scipy==1.18.1",
     "matplotlib==3.10.3",
     "av==16.1.0",
     "yt-dlp",
@@ -59,7 +59,7 @@ dependencies = [
     # ui
     "customtkinter==5.2.2",
     # Match `pyside6` below to this version
-    "PySide6==6.11.1",
+    "PySide6==6.11.2",
 
     # cloud
     "runpod==1.11.0",
@@ -206,7 +206,7 @@ cxx-compiler = "*"
 tk = { version = "*", build = "xft_*" }
 libgl = "*"
 libglib = "*"
-pyside6 = "==6.11.1"
+pyside6 = "==6.11.2"
 
 [tool.pixi.pypi-options]
 index-strategy = "unsafe-best-match"
